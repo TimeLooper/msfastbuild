@@ -72,6 +72,7 @@ namespace msfastbuild
 		static public MSFBProject CurrentProject;
 		static public Assembly CPPTasksAssembly;
 		static public string PreBuildBatchFile = "";
+        static public string CustomBuildBatchFile = "";
 		static public string PostBuildBatchFile = "";
 		static public string SolutionDir = "";
 		static public bool HasCompileActions = true;
@@ -389,10 +390,15 @@ namespace msfastbuild
 				{
 					ObjectListString.Append(PrecompiledHeaderString);
 				}
-				if (!string.IsNullOrEmpty(PreBuildBatchFile))
+				if (!string.IsNullOrEmpty(CustomBuildBatchFile))
 				{
-					ObjectListString.Append("\t.PreBuildDependencies  = 'prebuild'\n");
+					ObjectListString.Append("\t.PreBuildDependencies  = 'custombuild'\n");
 				}
+                else if (!string.IsNullOrEmpty(PreBuildBatchFile))
+                {
+                    ObjectListString.Append("\t.PreBuildDependencies  = 'prebuild'\n");
+                }
+
 				ObjectListString.Append("}\n\n");
 				ResultString += ObjectListString.ToString();
 				return ResultString;
@@ -413,6 +419,7 @@ namespace msfastbuild
 			Project ActiveProject = CurrentProject.Proj;
 			string MD5hash = "wafflepalooza";
 			PreBuildBatchFile = "";
+            CustomBuildBatchFile = "";
 			PostBuildBatchFile = "";
 			bool FileChanged = HasFileChanged(ActiveProject.FullPath, Platform, Config, out MD5hash);
 
@@ -529,7 +536,7 @@ namespace msfastbuild
 						string BatchText = "call \"" + VCBasePath + "Auxiliary\\Build\\vcvarsall.bat\" "
 							+ (Platform == "Win32" ? "x86" : "x64") + " " + WindowsSDKTarget + "\n";
 						PreBuildBatchFile = Path.Combine(ActiveProject.DirectoryPath, Path.GetFileNameWithoutExtension(ActiveProject.FullPath) + "_prebuild.bat");
-						File.WriteAllText(PreBuildBatchFile, BatchText + mdPi.EvaluatedValue);						
+						File.WriteAllText(PreBuildBatchFile, BatchText + mdPi.EvaluatedValue);
 						OutputString.Append("Exec('prebuild') \n{\n");
 						OutputString.AppendFormat("\t.ExecExecutable = '{0}' \n", PreBuildBatchFile);
 						OutputString.AppendFormat("\t.ExecInput = '{0}' \n", PreBuildBatchFile);
@@ -615,6 +622,60 @@ namespace msfastbuild
 					ObjectLists.Add(new ObjectListNode(Item.EvaluatedInclude, "rc", IntDir, formattedCompilerOptions, PrecompiledHeaderString, ".res"));
 				}
 			}
+
+            var CustomBuilds = ActiveProject.GetItems("CustomBuild");
+            var Dependencies = new List<string>();
+            var CustomBuildBatchText = new List<string>();
+            CustomBuildBatchText.Add("call \"" + VCBasePath + "Auxiliary\\Build\\vcvarsall.bat\" "
+                    + (Platform == "Win32" ? "x86" : "x64") + " " + WindowsSDKTarget + "\n");
+            foreach (var Item in CustomBuilds)
+            {
+                if (Item.DirectMetadata.Any())
+                {
+                    if (Item.DirectMetadata.Where(dmd => dmd.Name == "ExcludedFromBuild" && dmd.EvaluatedValue == "true").Any())
+                        continue;
+                }
+
+                var File = Path.Combine(ActiveProject.DirectoryPath, Item.EvaluatedInclude);
+                Dependencies.Add(File);
+                var Command = Item.Metadata.Where(dmd => dmd.Name == "Command").First().EvaluatedValue;
+
+                CustomBuildBatchText.Add(Command + "\n");
+
+                var AdditionInputs = Item.Metadata.Where(dmd => dmd.Name == "AdditionalInputs");
+                if (!AdditionInputs.Any())
+                {
+                    continue;
+                }
+                Dependencies.AddRange(AdditionInputs.First().EvaluatedValue.Split(';').Where(value => !string.IsNullOrEmpty(value)));
+            }
+            if (CustomBuildBatchText.Count > 1)
+            {
+                CustomBuildBatchFile = Path.Combine(ActiveProject.DirectoryPath, Path.GetFileNameWithoutExtension(ActiveProject.FullPath) + "_custombuild.bat");
+                File.WriteAllLines(CustomBuildBatchFile, CustomBuildBatchText.ToArray());
+
+                OutputString.Append("Exec('custombuild') \n{\n");
+                OutputString.AppendFormat("\t.ExecExecutable = '{0}' \n", CustomBuildBatchFile);
+                OutputString.Append("\t.ExecInput = {");
+                var StartState = true;
+                foreach (var File in Dependencies)
+                {
+                    if (!StartState)
+                        OutputString.Append(",");
+                    OutputString.Append("'");
+                    OutputString.Append(File);
+                    OutputString.Append("'");
+                    StartState = false;
+                }
+                OutputString.Append("}\n");
+                OutputString.AppendFormat("\t.ExecOutput = '{0}' \n", CustomBuildBatchFile + ".txt");
+                if (!string.IsNullOrEmpty(PreBuildBatchFile))
+                {
+                    OutputString.Append("\t.PreBuildDependencies  = 'prebuild'\n");
+                }
+                OutputString.Append("\t.ExecUseStdOutAsOutput = true \n");
+                OutputString.Append("}\n\n");
+            }
 
 			int ActionNumber = 0;
 			foreach (ObjectListNode ObjList in ObjectLists)
@@ -780,6 +841,7 @@ namespace msfastbuild
 			var GenCmdLineMethod = Task.GetType().GetRuntimeMethods().Where(meth => meth.Name == "GenerateCommandLine").First(); //Dubious
 			return GenCmdLineMethod.Invoke(Task, new object[] { Type.Missing, Type.Missing }) as string;
 		}
+
 	}
 
 }
