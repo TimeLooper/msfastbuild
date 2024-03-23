@@ -649,7 +649,7 @@ namespace msfastbuild
                 }
                 Dependencies.AddRange(AdditionInputs.First().EvaluatedValue.Split(';').Where(value => !string.IsNullOrEmpty(value)));
             }
-            if (CustomBuildBatchText.Count > 1)
+            if (CustomBuildBatchText.Count > 1 && (FileChanged || CommandLineOptions.AlwaysRegenerate || !File.Exists(CustomBuildBatchFile)))
             {
                 CustomBuildBatchFile = Path.Combine(ActiveProject.DirectoryPath, Path.GetFileNameWithoutExtension(ActiveProject.FullPath) + "_custombuild.bat");
                 File.WriteAllLines(CustomBuildBatchFile, CustomBuildBatchText.ToArray());
