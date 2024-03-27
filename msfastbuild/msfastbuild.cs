@@ -643,6 +643,10 @@ namespace msfastbuild
                     if (Item.DirectMetadata.Where(dmd => dmd.Name == "ExcludedFromBuild" && dmd.EvaluatedValue == "true").Any())
                         continue;
                 }
+                if (!Item.Metadata.Where(dmd => dmd.Name == "Command").Any())
+                {
+                    continue;
+                }
 
                 var File = Path.Combine(ActiveProject.DirectoryPath, Item.EvaluatedInclude);
                 Dependencies.Add(File);
@@ -683,7 +687,7 @@ namespace msfastbuild
                 {
                     OutputString.AppendFormat("\n\t.ExecOutput = '{0}'", Outputs.First().EvaluatedValue);
                 }
-                OutputString.Append("\n\t.ExecUseStdOutAsOutput = true");
+                OutputString.Append("\n\t.ExecUseStdOutAsOutput = false");
                 if (CustomBuildIndex == -1)
                 {
                     if (!string.IsNullOrEmpty(PreBuildBatchFile))
