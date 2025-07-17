@@ -248,7 +248,7 @@ namespace msfastbuild
 								if (ProjRef.GetMetadataValue("ReferenceOutputAssembly") == "true" || ProjRef.GetMetadataValue("LinkLibraryDependencies") == "true")
 								{
 									//Console.WriteLine(string.Format("{0} referenced by {1}.", Path.GetFileNameWithoutExtension(ProjRef.EvaluatedInclude), Path.GetFileNameWithoutExtension(proj.FullPath)));
-									EvaluateProjectReferences(Path.GetDirectoryName(proj.FullPath) + Path.DirectorySeparatorChar + ProjRef.EvaluatedInclude, evaluatedProjects, newProj);
+									EvaluateProjectReferences(ProjRef.EvaluatedInclude, evaluatedProjects, newProj);
 								}
 							}
 							//Console.WriteLine("Adding " + Path.GetFileNameWithoutExtension(proj.FullPath));

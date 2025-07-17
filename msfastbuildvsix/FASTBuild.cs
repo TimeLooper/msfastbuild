@@ -25,6 +25,7 @@ namespace msfastbuildvsix
 		public const int SlnCommandId = 0x0101;
 		public const int ContextCommandId = 0x0102;
 		public const int SlnContextCommandId = 0x0103;
+		public const int FASTBuildStopId = 0x0104;
 
 		/// <summary>
 		/// Command menu group (command set GUID).
@@ -36,12 +37,17 @@ namespace msfastbuildvsix
         /// </summary>
         private readonly Package package;
 
-        /// <summary>
-        /// Initializes a new instance of the <see cref="FASTBuild"/> class.
-        /// Adds our command handlers for menu (commands must exist in the command table file)
-        /// </summary>
-        /// <param name="package">Owner package, not null.</param>
-        private FASTBuild(Package package)
+		/// <summary>
+		/// build process
+		/// </summary>
+		private System.Diagnostics.Process m_process;
+
+		/// <summary>
+		/// Initializes a new instance of the <see cref="FASTBuild"/> class.
+		/// Adds our command handlers for menu (commands must exist in the command table file)
+		/// </summary>
+		/// <param name="package">Owner package, not null.</param>
+		private FASTBuild(Package package)
         {
             if (package == null)
             {
@@ -66,6 +72,10 @@ namespace msfastbuildvsix
 				commandService.AddCommand(menuItem);
 
 				menuCommandID = new CommandID(CommandSet, SlnContextCommandId);
+				menuItem = new MenuCommand(this.MenuItemCallback, menuCommandID);
+				commandService.AddCommand(menuItem);
+
+				menuCommandID = new CommandID(CommandSet, FASTBuildStopId);
 				menuItem = new MenuCommand(this.MenuItemCallback, menuCommandID);
 				commandService.AddCommand(menuItem);
 			}
@@ -175,7 +185,16 @@ namespace msfastbuildvsix
 			SolutionConfiguration2 sc = sb.ActiveConfiguration as SolutionConfiguration2;
 			VCProject proj = null;
 
-			if (eventSender.CommandID.ID != SlnCommandId && eventSender.CommandID.ID != SlnContextCommandId)
+			if (eventSender.CommandID.ID == FASTBuildStopId)
+			{
+				if (m_process != null && !m_process.HasExited)
+                {
+					m_process.Kill();
+					m_process = null;
+                }
+				return;
+			}
+			else if (eventSender.CommandID.ID != SlnCommandId && eventSender.CommandID.ID != SlnContextCommandId)
 			{
 				if (fbPackage.m_dte.SelectedItems.Count > 0)
 				{
@@ -246,6 +265,7 @@ namespace msfastbuildvsix
 				FBProcess.Start();
 				FBProcess.BeginOutputReadLine();
 				//FBProcess.WaitForExit();
+				m_process = FBProcess;
 			}
 			catch (Exception ex)
 			{

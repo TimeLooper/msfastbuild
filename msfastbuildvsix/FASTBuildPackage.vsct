@@ -74,6 +74,14 @@
         </Strings>
       </Button>
 
+      <Button guid="guidFASTBuildPackageCmdSet" id="FASTBuildStopId" priority="0x0300" type="Button">
+        <Parent guid="guidFASTBuildPackageCmdSet" id="MyMenuGroup" />
+        <Icon guid="guidImages" id="bmpPic1" />
+        <Strings>
+          <ButtonText>FASTBuild Stop</ButtonText>
+        </Strings>
+      </Button>
+
       <Button guid="guidFASTBuildPackageCmdSet" id="ContextMenuFASTBuildId" priority="0x0100" type="Button">
         <Parent guid="guidFASTBuildPackageCmdSet" id="ProjContextMenuGroup" />
         <Icon guid="guidImages" id="bmpPic1" />
@@ -112,6 +120,7 @@
       <IDSymbol name="MyMenuGroup" value="0x1020" />
       <IDSymbol name="FASTBuildId" value="0x0100" />
       <IDSymbol name="SlnFASTBuildId" value="0x0101" />
+      <IDSymbol name="FASTBuildStopId" value="0x0104" />
       <IDSymbol name="ProjContextMenuGroup" value="0x1080" />
       <IDSymbol name="ContextMenuFASTBuildId" value="0x0102" />
       <IDSymbol name="SlnContextMenuGroup" value="0x1081" />
