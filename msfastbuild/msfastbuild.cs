@@ -13,6 +13,9 @@ using System.Text;
 using Microsoft.Build.Evaluation;
 using Microsoft.Build.Construction;
 using Microsoft.Build.Utilities;
+using System.IO.Pipes;
+using System.Threading;
+using Microsoft.Build.Execution;
 
 namespace msfastbuild
 {
@@ -58,6 +61,10 @@ namespace msfastbuild
 		HelpText = "Force disabling output of FASTBuild.")]
 		public bool QuietMode { get; set; }
 
+		[Option('R', "rebuild", DefaultValue = false,
+		HelpText = "Rebuild project FASTBuild.")]
+		public bool Rebuild { get; set; }
+
 		[HelpOption]
 		public string GetUsage()
 		{
@@ -70,7 +77,6 @@ namespace msfastbuild
 		static public string PlatformToolsetVersion = "140";
 		static public string VCBasePath = "";
 		static public string VCExePath = "";
-		static public string BFFOutputFilePath = "fbuild.bff";
 		static public Options CommandLineOptions = new Options();
 		static public string WindowsSDKTarget = "10.0.10240.0";
 		static public MSFBProject CurrentProject;
@@ -80,6 +86,7 @@ namespace msfastbuild
 		static public string PostBuildBatchFile = "";
 		static public string SolutionDir = "";
 		static public bool HasCompileActions = true;
+		static public System.Diagnostics.Process FBProcess;
 
 		public enum BuildType
 		{
@@ -95,6 +102,9 @@ namespace msfastbuild
 			public Project Proj;
 			public List<MSFBProject> Dependents = new List<MSFBProject>();
 			public string AdditionalLinkInputs = "";
+			public string TargetName = "";
+			public List<MSFBProject> AdditionalDependencies = new List<MSFBProject>();
+			public string BFFFilePath = "";
 		}
 
 		static void Main(string[] args)
@@ -113,21 +123,23 @@ namespace msfastbuild
 				return;
 			}
 
-			List <string> ProjectsToBuild = new List<string>();
+			List<string> ProjectsToBuild = new List<string>();
+			List<string> AllProjects = new List<string>();
 			if (!string.IsNullOrEmpty(CommandLineOptions.Solution) && File.Exists(CommandLineOptions.Solution))
 			{
 				try
 				{
+					List<ProjectInSolution> SolutionProjects = SolutionFile.Parse(Path.GetFullPath(CommandLineOptions.Solution)).ProjectsInOrder.Where(el => el.ProjectType == SolutionProjectType.KnownToBeMSBuildFormat).ToList();
+					SolutionProjects.Sort((x, y) => //Very dubious sort.
+					{
+						if (x.Dependencies.Contains(y.ProjectGuid)) return 1;
+						if (y.Dependencies.Contains(x.ProjectGuid)) return -1;
+						return 0;
+					});
+					AllProjects = SolutionProjects.ConvertAll(el => el.AbsolutePath);
 					if (string.IsNullOrEmpty(CommandLineOptions.Project))
 					{
-						List<ProjectInSolution> SolutionProjects = SolutionFile.Parse(Path.GetFullPath(CommandLineOptions.Solution)).ProjectsInOrder.Where(el => el.ProjectType == SolutionProjectType.KnownToBeMSBuildFormat).ToList();
-						SolutionProjects.Sort((x, y) => //Very dubious sort.
-						{
-							if (x.Dependencies.Contains(y.ProjectGuid)) return 1;
-							if (y.Dependencies.Contains(x.ProjectGuid)) return -1;
-							return 0;
-						});
-						ProjectsToBuild = SolutionProjects.ConvertAll(el => el.AbsolutePath);
+						ProjectsToBuild.AddRange(AllProjects);
 					}
 					else
 					{
@@ -151,14 +163,37 @@ namespace msfastbuild
 				ProjectsToBuild.Add(Path.GetFullPath(CommandLineOptions.Project));
 			}
 
-			List<MSFBProject> EvaluatedProjects = new List<MSFBProject>();
+			var AllProjectList = new List<MSFBProject>();
 
-			for (int i=0; i < ProjectsToBuild.Count; ++i)
+			foreach (var p in AllProjects)
 			{
-				EvaluateProjectReferences(ProjectsToBuild[i], EvaluatedProjects, null);
+				var proj = ParseProject(p);
+				if (proj == null)
+					continue;
+				AllProjectList.Add(proj);
 			}
 
+			var EvaluatedProjects = new List<MSFBProject>();
+
+			foreach (var p in ProjectsToBuild)
+            {
+				EvaluateProjectReferences(p, AllProjectList, EvaluatedProjects, null);
+            }
+
+			var Graph = new Dictionary<MSFBProject, List<MSFBProject>>();
+			foreach (var proj in EvaluatedProjects)
+            {
+				var tempDependents = new List<MSFBProject>();
+                tempDependents.AddRange(proj.Dependents);
+                tempDependents.AddRange(proj.AdditionalDependencies);
+                Graph.Add(proj, tempDependents);
+            }
+
+			EvaluatedProjects = TopologicalSortKahn(Graph);
+			EvaluatedProjects.Reverse();
+
 			int ProjectsBuilt = 0;
+			var WaitToBuild = new List<MSFBProject>();
 			foreach(MSFBProject project in EvaluatedProjects)
 			{
 				CurrentProject = project;
@@ -193,28 +228,178 @@ namespace msfastbuild
 					CPPTasksAssembly = Assembly.LoadFrom(AppDomain.CurrentDomain.BaseDirectory + BuildDllName);
 				}
 
-				BFFOutputFilePath = Path.GetDirectoryName(CurrentProject.Proj.FullPath) + "\\" + Path.GetFileName(CurrentProject.Proj.FullPath) + "_" + CommandLineOptions.Config.Replace(" ", "") + "_" + CommandLineOptions.Platform.Replace(" ", "") + ".bff";
+				CurrentProject.BFFFilePath = Path.GetDirectoryName(CurrentProject.Proj.FullPath) + "\\" + Path.GetFileName(CurrentProject.Proj.FullPath) + "_" + CommandLineOptions.Config.Replace(" ", "") + "_" + CommandLineOptions.Platform.Replace(" ", "") + ".bff";
 				GenerateBffFromVcxproj(CommandLineOptions.Config, CommandLineOptions.Platform);
 
 				if (!CommandLineOptions.GenerateOnly)
 				{
-					if (HasCompileActions && !ExecuteBffFile(CurrentProject.Proj.FullPath, CommandLineOptions.Platform))
-						break;
-					else
-						ProjectsBuilt++;
+					if (HasCompileActions)
+					{
+						WaitToBuild.Add(CurrentProject);
+					}
 				}
 			}
 
+			if (!CommandLineOptions.GenerateOnly)
+			{
+				foreach (var proj in WaitToBuild)
+				{
+					if (!ExecuteBffFile(proj.Proj.FullPath, proj.BFFFilePath, CommandLineOptions.Platform))
+						break;
+					ProjectsBuilt++;
+				}
+			}
+			
 			Console.WriteLine(ProjectsBuilt + "/" + EvaluatedProjects.Count + " built.");
 		}
+		static void ListenForTerminateSignal()
+		{
+			try
+			{
+				using (NamedPipeClientStream pipeClient =
+					   new NamedPipeClientStream(".", "TerminateNotificationPipe", PipeDirection.In))
+				{
+					pipeClient.Connect();
 
-		static public void EvaluateProjectReferences(string ProjectPath, List<MSFBProject> evaluatedProjects, MSFBProject dependent)
+					using (StreamReader sr = new StreamReader(pipeClient))
+					{
+						string message = sr.ReadLine();
+						if (message == "Terminate")
+						{
+							// 执行清理工作
+							if (FBProcess != null && !FBProcess.HasExited)
+							{
+								FBProcess.Kill();
+								FBProcess.Dispose();
+							}
+							Environment.Exit(0);
+							Console.WriteLine("Terminate build.");
+						}
+					}
+				}
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine($"管道通信错误: {ex.Message}");
+			}
+		}
+
+		public static List<T> TopologicalSortKahn<T>(Dictionary<T, List<T>> graph)
+		{
+			// 收集所有节点（包括没有出边的节点）
+			var allNodes = new HashSet<T>();
+			foreach (var node in graph.Keys)
+			{
+				allNodes.Add(node);
+				if (graph.TryGetValue(node, out var neighbors))
+				{
+					foreach (var neighbor in neighbors)
+					{
+						allNodes.Add(neighbor);
+					}
+				}
+			}
+
+			// 计算每个节点的入度
+			var inDegree = new Dictionary<T, int>();
+			foreach (var node in allNodes)
+			{
+				inDegree[node] = 0;
+			}
+
+			foreach (var node in graph)
+			{
+				foreach (var neighbor in node.Value)
+				{
+					inDegree[neighbor]++;
+				}
+			}
+
+			// 将所有入度为0的节点加入队列
+			var queue = new Queue<T>(inDegree.Where(kv => kv.Value == 0).Select(kv => kv.Key));
+			var result = new List<T>();
+
+			while (queue.Count > 0)
+			{
+				var node = queue.Dequeue();
+				result.Add(node);
+
+				// 减少其邻居节点的入度
+				if (graph.TryGetValue(node, out var neighbors))
+				{
+					foreach (var neighbor in neighbors)
+					{
+						inDegree[neighbor]--;
+						if (inDegree[neighbor] == 0)
+						{
+							queue.Enqueue(neighbor);
+						}
+					}
+				}
+			}
+
+			// 如果排序结果的节点数不等于图的节点数，说明存在环
+			if (result.Count != allNodes.Count)
+			{
+				throw new InvalidOperationException("Graph contains a cycle");
+			}
+
+			return result;
+		}
+
+		static public MSFBProject ParseProject(string ProjectPath)
 		{
 			if (!string.IsNullOrEmpty(ProjectPath) && File.Exists(ProjectPath))
 			{
 				try
 				{
-					MSFBProject newProj = evaluatedProjects.Find(elem => elem.Proj.FullPath == Path.GetFullPath(ProjectPath));
+					ProjectCollection projColl = new ProjectCollection();
+					if (!string.IsNullOrEmpty(SolutionDir))
+						projColl.SetGlobalProperty("SolutionDir", SolutionDir);
+					var newProj = new MSFBProject();
+					Project proj = projColl.LoadProject(ProjectPath);
+
+					if (proj != null)
+					{
+						proj.SetGlobalProperty("Configuration", CommandLineOptions.Config);
+						proj.SetGlobalProperty("Platform", CommandLineOptions.Platform);
+						if (!string.IsNullOrEmpty(SolutionDir))
+							proj.SetGlobalProperty("SolutionDir", SolutionDir);
+						proj.ReevaluateIfNecessary();
+						newProj.Proj = proj;
+
+						var LinkDefinitions = proj.ItemDefinitions["Link"];
+						var configType = proj.GetProperty("ConfigurationType").EvaluatedValue;
+						var targetName = "";
+						if (configType == "DynamicLibrary")
+                        {
+							targetName = Path.GetFileName(LinkDefinitions.GetMetadataValue("ImportLibrary"));
+                        }
+						if (configType == "StaticLibrary")
+                        {
+							targetName = Path.GetFileName(LinkDefinitions.GetMetadataValue("OutputFile"));
+						}
+						newProj.TargetName = targetName;
+						return newProj;
+					}
+				}
+				catch (Exception e)
+				{
+					Console.WriteLine("Failed to parse project file " + ProjectPath + "!");
+					Console.WriteLine("Exception: " + e.Message);
+				}
+			}
+			return null;
+		}
+
+		static public void EvaluateProjectReferences(string ProjectPath, List<MSFBProject> allProjects, List<MSFBProject> evaluatedProjects, MSFBProject dependent)
+		{
+			if (!string.IsNullOrEmpty(ProjectPath) && File.Exists(ProjectPath))
+			{
+				try
+				{
+					var FullPath = Path.GetFullPath(ProjectPath);
+					MSFBProject newProj = evaluatedProjects.Find(elem => elem.Proj.FullPath == FullPath);
 					if (newProj != null)
 					{
 						//Console.WriteLine("Found exisiting project " + Path.GetFileNameWithoutExtension(ProjectPath));
@@ -223,37 +408,33 @@ namespace msfastbuild
 					}
 					else
 					{
-						ProjectCollection projColl = new ProjectCollection();
-						if (!string.IsNullOrEmpty(SolutionDir))
-							projColl.SetGlobalProperty("SolutionDir", SolutionDir);
-						newProj = new MSFBProject();
-						Project proj = projColl.LoadProject(ProjectPath);
-
-						if (proj != null)
+						newProj = allProjects.Find(e => e.Proj.FullPath == FullPath);
+						if (dependent != null)
 						{
-							proj.SetGlobalProperty("Configuration", CommandLineOptions.Config);
-							proj.SetGlobalProperty("Platform", CommandLineOptions.Platform);
-							if (!string.IsNullOrEmpty(SolutionDir))
-								proj.SetGlobalProperty("SolutionDir", SolutionDir);
-							proj.ReevaluateIfNecessary();
-
-							newProj.Proj = proj;
-							if (dependent != null)
-							{
-								newProj.Dependents.Add(dependent);
-							}
-							var ProjectReferences = proj.Items.Where(elem => elem.ItemType == "ProjectReference");
-							foreach (var ProjRef in ProjectReferences)
-							{
-								if (ProjRef.GetMetadataValue("ReferenceOutputAssembly") == "true" || ProjRef.GetMetadataValue("LinkLibraryDependencies") == "true")
-								{
-									//Console.WriteLine(string.Format("{0} referenced by {1}.", Path.GetFileNameWithoutExtension(ProjRef.EvaluatedInclude), Path.GetFileNameWithoutExtension(proj.FullPath)));
-									EvaluateProjectReferences(ProjRef.EvaluatedInclude, evaluatedProjects, newProj);
-								}
-							}
-							//Console.WriteLine("Adding " + Path.GetFileNameWithoutExtension(proj.FullPath));
-							evaluatedProjects.Add(newProj);
+							newProj.Dependents.Add(dependent);
 						}
+						var ProjectReferences = newProj.Proj.Items.Where(elem => elem.ItemType == "ProjectReference");
+						foreach (var ProjRef in ProjectReferences)
+						{
+							if (ProjRef.GetMetadataValue("ReferenceOutputAssembly") == "true" || ProjRef.GetMetadataValue("LinkLibraryDependencies") == "true")
+							{
+								//Console.WriteLine(string.Format("{0} referenced by {1}.", Path.GetFileNameWithoutExtension(ProjRef.EvaluatedInclude), Path.GetFileNameWithoutExtension(proj.FullPath)));
+								EvaluateProjectReferences(ProjRef.EvaluatedInclude, allProjects, evaluatedProjects, newProj);
+							}
+						}
+						//Console.WriteLine("Adding " + Path.GetFileNameWithoutExtension(proj.FullPath));
+						var LinkDefinitions = newProj.Proj.ItemDefinitions["Link"];
+						var AdditionalDependencies = LinkDefinitions.GetMetadataValue("AdditionalDependencies").Split(new string[]{ ";" }, StringSplitOptions.RemoveEmptyEntries);
+						foreach (var dep in AdditionalDependencies)
+                        {
+							var p = allProjects.Find(e => e.TargetName.ToLower() == dep.ToLower());
+							if (p == null)
+								continue;
+							if (newProj.Dependents.Find(e => e.Proj.FullPath == p.Proj.FullPath) != null)
+								continue;
+							newProj.AdditionalDependencies.Add(p);
+                        }
+						evaluatedProjects.Add(newProj);
 					}
 				}
 				catch (Exception e)
@@ -275,12 +456,12 @@ namespace msfastbuild
 				}
 			}
 			
-			if (!File.Exists(BFFOutputFilePath))
+			if (!File.Exists(CurrentProject.BFFFilePath))
 				return true;
 			
 			try
             {
-                using (var reader = new StreamReader(BFFOutputFilePath))
+                using (var reader = new StreamReader(CurrentProject.BFFFilePath))
                 {
                     var FirstLine = reader.ReadLine();
                     return FirstLine != MD5hash;
@@ -292,29 +473,19 @@ namespace msfastbuild
             }
 		}
 
-		static public bool ExecuteBffFile(string ProjectPath, string Platform)
+		static public bool ExecuteBffFile(string ProjectPath, string BFFFilePath, string Platform)
 		{
 			string projectDir = Path.GetDirectoryName(ProjectPath) + "\\";
-
-			string BatchFileText = "@echo off\n"
-				+ "%comspec% /c \"\"" + VCBasePath + "Auxiliary\\Build\\vcvarsall.bat\" "
-				+ (Platform == "Win32" ? "x86" : "x64") + " " + WindowsSDKTarget
-				+ " && \"" + CommandLineOptions.FBPath  +"\" %*\"";
-
-			if (CommandLineOptions.QuietMode)
-			{
-				BatchFileText += " > nul";
-			}
-
-			File.WriteAllText(projectDir + "fb.bat", BatchFileText);
-
 			Console.WriteLine("Building " + Path.GetFileNameWithoutExtension(ProjectPath));
-
 			try
 			{
-				System.Diagnostics.Process FBProcess = new System.Diagnostics.Process();
-				FBProcess.StartInfo.FileName = projectDir + "fb.bat";
-				FBProcess.StartInfo.Arguments = "-config \"" + BFFOutputFilePath + "\" " + CommandLineOptions.FBArgs;
+				FBProcess = new System.Diagnostics.Process();
+				FBProcess.StartInfo.FileName = CommandLineOptions.FBPath;
+				FBProcess.StartInfo.Arguments = "-config \"" + BFFFilePath + "\" " + CommandLineOptions.FBArgs;
+				if (CommandLineOptions.Rebuild)
+                {
+					FBProcess.StartInfo.Arguments += " -clean";
+                }
 				FBProcess.StartInfo.RedirectStandardOutput = true;
 				FBProcess.StartInfo.UseShellExecute = false;
 				FBProcess.StartInfo.WorkingDirectory = projectDir;
@@ -326,7 +497,10 @@ namespace msfastbuild
 				    Console.Write(FBProcess.StandardOutput.ReadLine() + "\n");
 				}
 				FBProcess.WaitForExit();
-				return FBProcess.ExitCode == 0;
+				bool result = FBProcess.ExitCode == 0;
+				FBProcess.Dispose();
+				FBProcess = null;
+				return result;
 			}
 			catch (Exception e)
 			{
@@ -428,11 +602,15 @@ namespace msfastbuild
 
 		static private void GenerateBffFromVcxproj(string Config, string Platform)
 		{
+			CustomBuildIndex = -1;
 			Project ActiveProject = CurrentProject.Proj;
 			string MD5hash = "wafflepalooza";
 			PreBuildBatchFile = "";
 			PostBuildBatchFile = "";
 			bool FileChanged = HasFileChanged(ActiveProject.FullPath, Platform, Config, out MD5hash);
+
+			if (!FileChanged && CommandLineOptions.Rebuild && CommandLineOptions.AlwaysRegenerate)
+				return;
 
 			string configType = ActiveProject.GetProperty("ConfigurationType").EvaluatedValue;
 			switch(configType)
@@ -690,7 +868,7 @@ namespace msfastbuild
                 var Outputs = Item.Metadata.Where(dmd => dmd.Name == "Outputs");
                 if (Outputs.Any())
                 {
-                    OutputString.AppendFormat("\n\t.ExecOutput = '{0}'", Outputs.First().EvaluatedValue);
+                    OutputString.AppendFormat("\n\t.ExecOutput = '{0}'", Outputs.First().EvaluatedValue.Trim(new char[] { ';' }));
                 }
                 OutputString.Append("\n\t.ExecUseStdOutAsOutput = false");
                 if (CustomBuildIndex == -1)
@@ -708,7 +886,7 @@ namespace msfastbuild
 
                 CustomBuildIndex += 1;
             }
-            if (CustomBuildIndex > -1 && (FileChanged || CommandLineOptions.AlwaysRegenerate || !File.Exists(CustomBuildBatchFile)))
+            if (CustomBuildIndex > -1 && (FileChanged || CommandLineOptions.AlwaysRegenerate || CommandLineOptions.Rebuild || !File.Exists(CustomBuildBatchFile)))
             {
                 File.WriteAllLines(CustomBuildBatchFile, CustomBuildBatchText);
             }
@@ -836,9 +1014,9 @@ namespace msfastbuild
 
 			OutputString.AppendFormat("Alias ('all')\n{{\n\t.Targets = {{ '{0}' }}\n}}", string.IsNullOrEmpty(PostBuildBatchFile) ? "output" : "postbuild");
 
-			if(FileChanged || CommandLineOptions.AlwaysRegenerate)
+			if(FileChanged || CommandLineOptions.AlwaysRegenerate || CommandLineOptions.Rebuild)
 			{
-				File.WriteAllText(BFFOutputFilePath, OutputString.ToString());
+				File.WriteAllText(CurrentProject.BFFFilePath, OutputString.ToString());
 			}		   
 		}
 

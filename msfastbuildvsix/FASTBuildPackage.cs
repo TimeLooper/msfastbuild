@@ -142,6 +142,15 @@ namespace msfastbuildvsix
 			m_outputPane.OutputString("FASTBuild\r");
 		}
 
-		#endregion
-	}
+        protected override void Dispose(bool disposing)
+        {
+			if (disposing)
+            {
+				FASTBuild.Instance.OnShutdown();
+            }
+            base.Dispose(disposing);
+        }
+
+        #endregion
+    }
 }

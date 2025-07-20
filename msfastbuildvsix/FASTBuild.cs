@@ -10,6 +10,7 @@ using System.Reflection;
 using System.IO;
 using EnvDTE;
 using EnvDTE80;
+using System.IO.Pipes;
 
 namespace msfastbuildvsix
 {
@@ -26,6 +27,9 @@ namespace msfastbuildvsix
 		public const int ContextCommandId = 0x0102;
 		public const int SlnContextCommandId = 0x0103;
 		public const int FASTBuildStopId = 0x0104;
+		public const int SlnFASTBuildRebuildId = 0x0105;
+		public const int ContextMenuFASTBuildRebuildId = 0x0106;
+		public const int SlnContextMenuFASTBuildRebuildId = 0x0107;
 
 		/// <summary>
 		/// Command menu group (command set GUID).
@@ -41,6 +45,10 @@ namespace msfastbuildvsix
 		/// build process
 		/// </summary>
 		private System.Diagnostics.Process m_process;
+
+		// private NamedPipeServerStream pipServer;
+		// private StreamWriter writer;
+		// private System.Threading.Thread waitThread;
 
 		/// <summary>
 		/// Initializes a new instance of the <see cref="FASTBuild"/> class.
@@ -78,8 +86,39 @@ namespace msfastbuildvsix
 				menuCommandID = new CommandID(CommandSet, FASTBuildStopId);
 				menuItem = new MenuCommand(this.MenuItemCallback, menuCommandID);
 				commandService.AddCommand(menuItem);
+
+				menuCommandID = new CommandID(CommandSet, SlnFASTBuildRebuildId);
+				menuItem = new MenuCommand(this.MenuItemCallback, menuCommandID);
+				commandService.AddCommand(menuItem);
+
+				menuCommandID = new CommandID(CommandSet, ContextMenuFASTBuildRebuildId);
+				menuItem = new MenuCommand(this.MenuItemCallback, menuCommandID);
+				commandService.AddCommand(menuItem);
+
+				menuCommandID = new CommandID(CommandSet, SlnContextMenuFASTBuildRebuildId);
+				menuItem = new MenuCommand(this.MenuItemCallback, menuCommandID);
+				commandService.AddCommand(menuItem);
 			}
+			// pipServer = new NamedPipeServerStream("TerminateNotificationPipe", PipeDirection.Out);
+			// writer = new StreamWriter(pipServer);
 		}
+
+		public void OnShutdown()
+        {
+			if (m_process != null && !m_process.HasExited)
+            {
+				// writer.WriteLine("Terminate");
+				// writer.Flush();
+				var process = System.Diagnostics.Process.GetProcessesByName("FBuild");
+				foreach (var p in process)
+                {
+					p.Kill();
+                }
+				m_process.Kill();
+				m_process.Dispose();
+				m_process = null;
+			}
+        }
 
 		/// <summary>
 		/// Gets the instance of the command.
@@ -154,14 +193,29 @@ namespace msfastbuildvsix
 
 			MenuCommand eventSender = sender as MenuCommand;
 
-			fbPackage.m_outputPane.Activate();
-			fbPackage.m_outputPane.Clear();
-
 			if (eventSender == null)
 			{
 				fbPackage.m_outputPane.OutputString("VSIX failed to cast sender to OleMenuCommand.\r");
 				return;
 			}
+
+			if (eventSender.CommandID.ID == FASTBuildStopId)
+			{
+				if (m_process != null && !m_process.HasExited)
+				{
+					// writer.WriteLine("Terminate");
+					// writer.Flush();
+					OnShutdown();
+				}
+				return;
+			}
+			else if (m_process != null && !m_process.HasExited)
+			{
+				return;
+			}
+
+			fbPackage.m_outputPane.Activate();
+			fbPackage.m_outputPane.Clear();
 
 			if (fbPackage.m_dte.Debugger.CurrentMode != dbgDebugMode.dbgDesignMode)
 			{
@@ -184,17 +238,9 @@ namespace msfastbuildvsix
 			SolutionBuild sb = sln.SolutionBuild;
 			SolutionConfiguration2 sc = sb.ActiveConfiguration as SolutionConfiguration2;
 			VCProject proj = null;
+			bool rebuild = false;
 
-			if (eventSender.CommandID.ID == FASTBuildStopId)
-			{
-				if (m_process != null && !m_process.HasExited)
-                {
-					m_process.Kill();
-					m_process = null;
-                }
-				return;
-			}
-			else if (eventSender.CommandID.ID != SlnCommandId && eventSender.CommandID.ID != SlnContextCommandId)
+			if (eventSender.CommandID.ID != SlnCommandId && eventSender.CommandID.ID != SlnContextCommandId && eventSender.CommandID.ID != SlnContextMenuFASTBuildRebuildId && eventSender.CommandID.ID != SlnFASTBuildRebuildId)
 			{
 				if (fbPackage.m_dte.SelectedItems.Count > 0)
 				{
@@ -221,12 +267,21 @@ namespace msfastbuildvsix
 					return;
 				}
 
+				if (eventSender.CommandID.ID == ContextMenuFASTBuildRebuildId)
+				{
+					rebuild = true;
+				}
+
 				fbPackage.m_outputPane.OutputString("Building " + Path.GetFileName(proj.ProjectFile) + " " + sc.Name + " " + sc.PlatformName + "\r");
 				fbCommandLine = string.Format("-p \"{0}\" -c {1} -f {2} -s \"{3}\" -a\"{4}\" -b \"{5}\"", Path.GetFileName(proj.ProjectFile), sc.Name, sc.PlatformName, sln.FileName, fbPackage.OptionFBArgs, fbPackage.OptionFBPath);
 				fbWorkingDirectory = Path.GetDirectoryName(proj.ProjectFile);
 			}
 			else
 			{
+				if (eventSender.CommandID.ID == SlnContextMenuFASTBuildRebuildId || eventSender.CommandID.ID == SlnContextMenuFASTBuildRebuildId || eventSender.CommandID.ID == SlnFASTBuildRebuildId)
+				{
+					rebuild = true;
+				}
 				fbCommandLine = string.Format("-s \"{0}\" -c {1} -f {2} -a\"{3}\" -b \"{4}\"", sln.FileName, sc.Name, sc.PlatformName, fbPackage.OptionFBArgs, fbPackage.OptionFBPath);
 				fbWorkingDirectory = Path.GetDirectoryName(sln.FileName);
 			}
@@ -240,6 +295,11 @@ namespace msfastbuildvsix
 			{
 				fbCommandLine += " -q true";
 			}
+
+			if (rebuild)
+            {
+				fbCommandLine += " -R true";
+            }
 
 			string msfastbuildPath = Assembly.GetAssembly(typeof(msfastbuild.msfastbuild)).Location;
 			try
@@ -260,17 +320,31 @@ namespace msfastbuildvsix
 					if (Args.Data != null)
 						fbPackage.m_outputPane.OutputString(Args.Data + "\r");
 				};
-
 				FBProcess.OutputDataReceived += OutputEventHandler;
 				FBProcess.Start();
 				FBProcess.BeginOutputReadLine();
 				//FBProcess.WaitForExit();
 				m_process = FBProcess;
+				// pipServer.WaitForConnection();
+				// waitThread = new System.Threading.Thread(WaitProcess);
+				// waitThread.IsBackground = true;
+				// waitThread.Start();
 			}
 			catch (Exception ex)
 			{
 				fbPackage.m_outputPane.OutputString("VSIX exception launching msfastbuild. Could be a broken VSIX? Exception: " + ex.Message + "\r");
 			}
 		}
+
+		private void WaitProcess()
+        {
+			if (m_process != null)
+			{
+				m_process.WaitForExit();
+				m_process.Dispose();
+			}
+			// pipServer.Disconnect();
+			m_process = null;
+        }
 	}
 }

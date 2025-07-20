@@ -63,6 +63,7 @@
         <Icon guid="guidImages" id="bmpPic1" />
         <Strings>
           <ButtonText>FASTBuild Solution</ButtonText>
+          <CommandName>SlnFASTBuildId</CommandName>
         </Strings>
       </Button>
       
@@ -73,8 +74,16 @@
           <ButtonText>FASTBuild Project</ButtonText>
         </Strings>
       </Button>
+      
+      <Button guid="guidFASTBuildPackageCmdSet" id="SlnFASTBuildRebuildId" priority="0x0300" type="Button">
+        <Parent guid="guidFASTBuildPackageCmdSet" id="MyMenuGroup" />
+        <Icon guid="guidImages" id="bmpPic1" />
+        <Strings>
+          <ButtonText>FASTBuild Rebuild</ButtonText>
+        </Strings>
+      </Button>
 
-      <Button guid="guidFASTBuildPackageCmdSet" id="FASTBuildStopId" priority="0x0300" type="Button">
+      <Button guid="guidFASTBuildPackageCmdSet" id="FASTBuildStopId" priority="0x0400" type="Button">
         <Parent guid="guidFASTBuildPackageCmdSet" id="MyMenuGroup" />
         <Icon guid="guidImages" id="bmpPic1" />
         <Strings>
@@ -90,11 +99,27 @@
         </Strings>
       </Button>
 
+      <Button guid="guidFASTBuildPackageCmdSet" id="ContextMenuFASTBuildRebuildId" priority="0x0200" type="Button">
+        <Parent guid="guidFASTBuildPackageCmdSet" id="ProjContextMenuGroup" />
+        <Icon guid="guidImages" id="bmpPic1" />
+        <Strings>
+          <ButtonText>FASTBuild Rebuild</ButtonText>
+        </Strings>
+      </Button>
+
       <Button guid="guidFASTBuildPackageCmdSet" id="SlnContextMenuFASTBuildId" priority="0x0100" type="Button">
         <Parent guid="guidFASTBuildPackageCmdSet" id="SlnContextMenuGroup" />
         <Icon guid="guidImages" id="bmpPic1" />
         <Strings>
           <ButtonText>FASTBuild Solution</ButtonText>
+        </Strings>
+      </Button>
+
+      <Button guid="guidFASTBuildPackageCmdSet" id="SlnContextMenuFASTBuildRebuildId" priority="0x0200" type="Button">
+        <Parent guid="guidFASTBuildPackageCmdSet" id="SlnContextMenuGroup" />
+        <Icon guid="guidImages" id="bmpPic1" />
+        <Strings>
+          <ButtonText>FASTBuild Rebuild</ButtonText>
         </Strings>
       </Button>
 
@@ -125,6 +150,9 @@
       <IDSymbol name="ContextMenuFASTBuildId" value="0x0102" />
       <IDSymbol name="SlnContextMenuGroup" value="0x1081" />
       <IDSymbol name="SlnContextMenuFASTBuildId" value="0x0103" />
+      <IDSymbol name="SlnFASTBuildRebuildId" value="0x0105"/>
+      <IDSymbol name="ContextMenuFASTBuildRebuildId" value="0x0106" />
+      <IDSymbol name="SlnContextMenuFASTBuildRebuildId" value="0x0107" />
     </GuidSymbol>
 
     <GuidSymbol name="guidImages" value="{8bcbf9f0-c7c3-4a1e-89a0-fe5addf1b971}">
