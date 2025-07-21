@@ -11,6 +11,8 @@ using System.IO;
 using EnvDTE;
 using EnvDTE80;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.ComponentModel;
 
 namespace msfastbuildvsix
 {
@@ -46,9 +48,28 @@ namespace msfastbuildvsix
 		/// </summary>
 		private System.Diagnostics.Process m_process;
 
-		// private NamedPipeServerStream pipServer;
-		// private StreamWriter writer;
-		// private System.Threading.Thread waitThread;
+		[DllImport("kernel32.dll", SetLastError = true)]
+		private static extern bool GenerateConsoleCtrlEvent(uint dwCtrlEvent, uint dwProcessGroupId);
+
+		[DllImport("kernel32.dll", SetLastError = true)]
+		private static extern bool AttachConsole(uint dwProcessId);
+
+		[DllImport("kernel32.dll", SetLastError = true)]
+		private static extern bool FreeConsole();
+
+		[DllImport("kernel32.dll", SetLastError = true)]
+		private static extern bool SetConsoleCtrlHandler(ConsoleCtrlDelegate handler, bool add);
+
+		private delegate bool ConsoleCtrlDelegate(CtrlTypes ctrlType);
+
+		private enum CtrlTypes : uint
+		{
+			CTRL_C_EVENT = 0,
+			CTRL_BREAK_EVENT = 1,
+			CTRL_CLOSE_EVENT = 2,
+			CTRL_LOGOFF_EVENT = 5,
+			CTRL_SHUTDOWN_EVENT = 6
+		}
 
 		/// <summary>
 		/// Initializes a new instance of the <see cref="FASTBuild"/> class.
@@ -99,24 +120,49 @@ namespace msfastbuildvsix
 				menuItem = new MenuCommand(this.MenuItemCallback, menuCommandID);
 				commandService.AddCommand(menuItem);
 			}
-			// pipServer = new NamedPipeServerStream("TerminateNotificationPipe", PipeDirection.Out);
-			// writer = new StreamWriter(pipServer);
 		}
 
 		public void OnShutdown()
         {
-			if (m_process != null && !m_process.HasExited)
+			if (m_process == null || m_process.HasExited)
             {
-				// writer.WriteLine("Terminate");
-				// writer.Flush();
-				var process = System.Diagnostics.Process.GetProcessesByName("FBuild");
-				foreach (var p in process)
-                {
-					p.Kill();
-                }
-				m_process.Kill();
-				m_process.Dispose();
 				m_process = null;
+				return;
+			}
+
+			FASTBuildPackage fbPackage = (FASTBuildPackage)this.package;
+			try
+			{
+				if (AttachConsole((uint) m_process.Id))
+				{
+					try
+					{
+                        SetConsoleCtrlHandler(null, true);
+                        var success = GenerateConsoleCtrlEvent((uint) CtrlTypes.CTRL_C_EVENT, 0);
+						if (success)
+						{
+							success = m_process.WaitForExit(1000);
+						}
+						else
+						{
+							int error = Marshal.GetLastWin32Error();
+						}
+					}
+					finally
+					{
+                        SetConsoleCtrlHandler(null, false);
+                        FreeConsole();
+					}
+				}
+				else
+				{
+					int error = Marshal.GetLastWin32Error();
+					fbPackage.m_outputPane.OutputString($"Stop failed. Error:{error}, {new Win32Exception(error).Message}");
+				}
+			}
+			catch (Exception ex)
+			{
+				fbPackage.m_outputPane.OutputString($"Stop failed. Error: {ex.Message}");
 			}
         }
 
@@ -149,7 +195,7 @@ namespace msfastbuildvsix
             Instance = new FASTBuild(package);
         }
 
-		[System.Runtime.InteropServices.DllImport("kernel32.dll")]
+		[DllImport("kernel32.dll")]
 		public static extern int GetSystemDefaultLCID();
 
 		private bool IsFBuildFindable(string FBuildExePath)
@@ -203,8 +249,6 @@ namespace msfastbuildvsix
 			{
 				if (m_process != null && !m_process.HasExited)
 				{
-					// writer.WriteLine("Terminate");
-					// writer.Flush();
 					OnShutdown();
 				}
 				return;

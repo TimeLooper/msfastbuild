@@ -13,9 +13,6 @@ using System.Text;
 using Microsoft.Build.Evaluation;
 using Microsoft.Build.Construction;
 using Microsoft.Build.Utilities;
-using System.IO.Pipes;
-using System.Threading;
-using Microsoft.Build.Execution;
 
 namespace msfastbuild
 {
@@ -251,37 +248,6 @@ namespace msfastbuild
 			}
 			
 			Console.WriteLine(ProjectsBuilt + "/" + EvaluatedProjects.Count + " built.");
-		}
-		static void ListenForTerminateSignal()
-		{
-			try
-			{
-				using (NamedPipeClientStream pipeClient =
-					   new NamedPipeClientStream(".", "TerminateNotificationPipe", PipeDirection.In))
-				{
-					pipeClient.Connect();
-
-					using (StreamReader sr = new StreamReader(pipeClient))
-					{
-						string message = sr.ReadLine();
-						if (message == "Terminate")
-						{
-							// 执行清理工作
-							if (FBProcess != null && !FBProcess.HasExited)
-							{
-								FBProcess.Kill();
-								FBProcess.Dispose();
-							}
-							Environment.Exit(0);
-							Console.WriteLine("Terminate build.");
-						}
-					}
-				}
-			}
-			catch (Exception ex)
-			{
-				Console.WriteLine($"管道通信错误: {ex.Message}");
-			}
 		}
 
 		public static List<T> TopologicalSortKahn<T>(Dictionary<T, List<T>> graph)
