@@ -99,7 +99,6 @@ namespace msfastbuild
 			public Project Proj;
 			public List<MSFBProject> Dependents = new List<MSFBProject>();
 			public string AdditionalLinkInputs = "";
-			public string TargetName = "";
 			public List<MSFBProject> AdditionalDependencies = new List<MSFBProject>();
 			public string BFFFilePath = "";
 		}
@@ -122,17 +121,16 @@ namespace msfastbuild
 
 			List<string> ProjectsToBuild = new List<string>();
 			List<string> AllProjects = new List<string>();
+			Dictionary<string, List<string>> slnDependencies = new Dictionary<string, List<string>>();
 			if (!string.IsNullOrEmpty(CommandLineOptions.Solution) && File.Exists(CommandLineOptions.Solution))
 			{
 				try
 				{
 					List<ProjectInSolution> SolutionProjects = SolutionFile.Parse(Path.GetFullPath(CommandLineOptions.Solution)).ProjectsInOrder.Where(el => el.ProjectType == SolutionProjectType.KnownToBeMSBuildFormat).ToList();
-					SolutionProjects.Sort((x, y) => //Very dubious sort.
-					{
-						if (x.Dependencies.Contains(y.ProjectGuid)) return 1;
-						if (y.Dependencies.Contains(x.ProjectGuid)) return -1;
-						return 0;
-					});
+					foreach (var proj in SolutionProjects)
+                    {
+						slnDependencies.Add(proj.ProjectGuid, proj.Dependencies.ToList());
+                    }
 					AllProjects = SolutionProjects.ConvertAll(el => el.AbsolutePath);
 					if (string.IsNullOrEmpty(CommandLineOptions.Project))
 					{
@@ -161,14 +159,31 @@ namespace msfastbuild
 			}
 
 			var AllProjectList = new List<MSFBProject>();
-
+			var ProjectGuidDict = new Dictionary<string, MSFBProject>();
 			foreach (var p in AllProjects)
 			{
 				var proj = ParseProject(p);
 				if (proj == null)
 					continue;
 				AllProjectList.Add(proj);
+				var projectGuid = proj.Proj.GetPropertyValue("ProjectGuid");
+				ProjectGuidDict[projectGuid] = proj;
 			}
+
+			foreach (var proj in AllProjectList)
+            {
+				var projectGuid = proj.Proj.GetPropertyValue("ProjectGuid");
+                if (slnDependencies.TryGetValue(projectGuid, out List<string> dependencies))
+                {
+                    foreach (var dep in dependencies)
+                    {
+                        if (ProjectGuidDict.TryGetValue(dep, out MSFBProject dependency))
+                        {
+							proj.AdditionalDependencies.Add(dependency);
+                        }
+                    }
+                }
+            }
 
 			var EvaluatedProjects = new List<MSFBProject>();
 
@@ -333,19 +348,6 @@ namespace msfastbuild
 							proj.SetGlobalProperty("SolutionDir", SolutionDir);
 						proj.ReevaluateIfNecessary();
 						newProj.Proj = proj;
-
-						var LinkDefinitions = proj.ItemDefinitions["Link"];
-						var configType = proj.GetProperty("ConfigurationType").EvaluatedValue;
-						var targetName = "";
-						if (configType == "DynamicLibrary")
-                        {
-							targetName = Path.GetFileName(LinkDefinitions.GetMetadataValue("ImportLibrary"));
-                        }
-						if (configType == "StaticLibrary")
-                        {
-							targetName = Path.GetFileName(LinkDefinitions.GetMetadataValue("OutputFile"));
-						}
-						newProj.TargetName = targetName;
 						return newProj;
 					}
 				}
@@ -388,19 +390,8 @@ namespace msfastbuild
 								EvaluateProjectReferences(ProjRef.EvaluatedInclude, allProjects, evaluatedProjects, newProj);
 							}
 						}
-						//Console.WriteLine("Adding " + Path.GetFileNameWithoutExtension(proj.FullPath));
-						var LinkDefinitions = newProj.Proj.ItemDefinitions["Link"];
-						var AdditionalDependencies = LinkDefinitions.GetMetadataValue("AdditionalDependencies").Split(new string[]{ ";" }, StringSplitOptions.RemoveEmptyEntries);
-						foreach (var dep in AdditionalDependencies)
-                        {
-							var p = allProjects.Find(e => e.TargetName.ToLower() == dep.ToLower());
-							if (p == null)
-								continue;
-							if (newProj.Dependents.Find(e => e.Proj.FullPath == p.Proj.FullPath) != null)
-								continue;
-							newProj.AdditionalDependencies.Add(p);
-                        }
-						evaluatedProjects.Add(newProj);
+                        //Console.WriteLine("Adding " + Path.GetFileNameWithoutExtension(proj.FullPath));
+                        evaluatedProjects.Add(newProj);
 					}
 				}
 				catch (Exception e)
